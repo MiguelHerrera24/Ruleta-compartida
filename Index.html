@@ -1,0 +1,304 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ruleta Compartida</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101321;color:white;font-family:Arial,sans-serif;text-align:center;padding:20px}
+h1{color:#ffd166}
+.panel{max-width:650px;margin:20px auto;background:#1d2338;padding:20px;border-radius:18px}
+canvas{width:min(90vw,420px);height:min(90vw,420px);max-width:420px}
+input,textarea,button{width:100%;padding:13px;margin:7px 0;border:0;border-radius:9px;font-size:16px}
+textarea{height:100px}
+button{background:#ffd166;color:#171717;font-weight:bold;cursor:pointer}
+button:disabled{opacity:.45;cursor:not-allowed}
+#spin{background:#ef476f;color:white;font-size:20px}
+#result{font-size:23px;color:#ffd166;font-weight:bold;min-height:35px}
+#status{color:#9da9c7;font-size:13px}
+#participants{text-align:left;line-height:1.8}
+</style>
+</head>
+<body>
+<h1>🎡 RULETA COMPARTIDA</h1>
+<p>¡Que la suerte decida!</p>
+
+<div class="panel">
+  <canvas id="wheel" width="600" height="600"></canvas>
+  <button id="spin">🎯 GIRAR RULETA</button>
+  <div id="result"></div>
+  <p id="status">Conectando...</p>
+</div>
+
+<div class="panel">
+  <h3>Agregar participantes</h3>
+  <textarea id="names" placeholder="Escribe un nombre por línea"></textarea>
+  <button id="add">Agregar participantes</button>
+  <button id="share">🔗 Copiar enlace de la sala</button>
+  <p id="room"></p>
+</div>
+
+<div class="panel">
+  <h3>Participantes restantes</h3>
+  <div id="participants">Cargando...</div>
+</div>
+
+<script>
+// 1. Configura Firebase con los datos de tu proyecto.
+const firebaseConfig = {
+  apiKey: "TU_API_KEY",
+  authDomain: "TU_PROYECTO.firebaseapp.com",
+  databaseURL: "https://TU_PROYECTO-default-rtdb.firebaseio.com",
+  projectId: "TU_PROYECTO",
+  appId: "TU_APP_ID"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+const colors = [
+  "#ef476f","#ffd166","#06d6a0",
+  "#118ab2","#9b5de5","#f15bb5",
+  "#00bbf9","#fee440","#fb8500",
+  "#80b918","#8338ec"
+];
+
+const params = new URLSearchParams(location.search);
+let roomId = params.get("sala");
+
+if(!roomId){
+  roomId = Math.random().toString(36).slice(2,10);
+  history.replaceState({}, "", "?sala="+roomId);
+}
+
+const roomRef = db.ref("salas/"+roomId);
+const canvas = document.getElementById("wheel");
+const ctx = canvas.getContext("2d");
+
+let players = [];
+let rotation = 0;
+let busy = false;
+let lastSpin = "";
+
+document.getElementById("room").textContent = "Sala: "+roomId;
+
+function draw(){
+  const cx=300,cy=300,r=280;
+  ctx.clearRect(0,0,600,600);
+
+  if(!players.length){
+    ctx.beginPath();
+    ctx.arc(cx,cy,r,0,Math.PI*2);
+    ctx.fillStyle="#30364c";
+    ctx.fill();
+    ctx.fillStyle="white";
+    ctx.font="bold 25px Arial";
+    ctx.textAlign="center";
+    ctx.fillText("Sin participantes",cx,cy);
+    return;
+  }
+
+  const arc=2*Math.PI/players.length;
+
+  players.forEach((p,i)=>{
+    const start=rotation+i*arc-Math.PI/2;
+    ctx.beginPath();
+    ctx.moveTo(cx,cy);
+    ctx.arc(cx,cy,r,start,start+arc);
+    ctx.closePath();
+    ctx.fillStyle=colors[i%11];
+    ctx.fill();
+    ctx.strokeStyle="white";
+    ctx.lineWidth=3;
+    ctx.stroke();
+
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.rotate(start+arc/2);
+    ctx.fillStyle="#151515";
+    ctx.font="bold 19px Arial";
+    ctx.textAlign="right";
+    ctx.fillText(p.name.substring(0,18),r-18,7);
+    ctx.restore();
+  });
+
+  ctx.beginPath();
+  ctx.arc(cx,cy,48,0,Math.PI*2);
+  ctx.fillStyle="white";
+  ctx.fill();
+  ctx.fillStyle="#171717";
+  ctx.font="bold 22px Arial";
+  ctx.textAlign="center";
+  ctx.fillText("GIRA",cx,308);
+
+  // Indicador superior
+  ctx.beginPath();
+  ctx.moveTo(270,5);
+  ctx.lineTo(330,5);
+  ctx.lineTo(300,65);
+  ctx.closePath();
+  ctx.fillStyle="white";
+  ctx.fill();
+}
+
+function animateWinner(oldPlayers,winner){
+  const index=oldPlayers.findIndex(p=>p.id===winner.id);
+  if(index<0)return;
+
+  busy=true;
+  document.getElementById("spin").disabled=true;
+
+  const arc=2*Math.PI/oldPlayers.length;
+  const current=((rotation%(2*Math.PI))+2*Math.PI)%(2*Math.PI);
+  const target=(-index*arc-arc/2+Math.PI/2);
+  const extra=((target-current)%(2*Math.PI)+2*Math.PI)%(2*Math.PI);
+  const start=rotation;
+  const end=start+extra+Math.PI*2*6;
+  const duration=4500;
+  const startTime=performance.now();
+
+  function frame(now){
+    const t=Math.min((now-startTime)/duration,1);
+    const ease=1-Math.pow(1-t,4);
+    rotation=start+(end-start)*ease;
+    draw();
+
+    if(t<1){
+      requestAnimationFrame(frame);
+    }else{
+      rotation=end%(2*Math.PI);
+      document.getElementById("result").textContent=
+        "🏆 ¡Ganador: "+winner.name+"!";
+      draw();
+      busy=false;
+      document.getElementById("spin").disabled=players.length===0;
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+// 2. Escuchar cambios en tiempo real.
+roomRef.on("value",snapshot=>{
+  const data=snapshot.val()||{};
+  players=data.players||[];
+  document.getElementById("participants").innerHTML=
+    players.length
+    ? players.map((p,i)=>
+      `${i+1}. ${escapeHTML(p.name)}`
+      ).join("<br>")
+    : "¡Todos han ganado!";
+
+  document.getElementById("status").textContent=
+    players.length+" participantes restantes";
+
+  draw();
+  document.getElementById("spin").disabled=
+    busy || players.length===0;
+
+  if(data.lastSpin && data.lastSpin.id!==lastSpin){
+    lastSpin=data.lastSpin.id;
+    document.getElementById("result").textContent=
+      "🏆 ¡Ganador: "+data.lastSpin.name+"!";
+  }
+});
+
+function escapeHTML(s){
+  return String(s).replace(/[&<>"']/g,c=>({
+    "&":"&amp;","<":"&lt;",">":"&gt;",
+    '"':"&quot;","'":"&#39;"
+  })[c]);
+}
+
+// 3. Agregar nombres sin duplicar.
+document.getElementById("add").onclick=async()=>{
+  const names=document.getElementById("names").value
+    .split("\n").map(n=>n.trim()).filter(Boolean);
+
+  if(!names.length)return;
+
+  await roomRef.transaction(data=>{
+    data=data||{players:[]};
+    data.players=data.players||[];
+
+    const existing=new Set(
+      data.players.map(p=>p.name.toLowerCase())
+    );
+
+    names.forEach(name=>{
+      if(!existing.has(name.toLowerCase())){
+        data.players.push({
+          id:Math.random().toString(36).slice(2),
+          name
+        });
+        existing.add(name.toLowerCase());
+      }
+    });
+    return data;
+  });
+
+  document.getElementById("names").value="";
+};
+
+// 4. Sorteo sincronizado: solo una persona puede ganar
+// en cada operación, gracias a la transacción.
+document.getElementById("spin").onclick=async()=>{
+  if(busy||!players.length)return;
+
+  busy=true;
+  document.getElementById("spin").disabled=true;
+
+  const oldPlayers=[...players];
+  let selected=null;
+
+  try{
+    await roomRef.transaction(data=>{
+      if(!data || !data.players || !data.players.length)return;
+
+      const index=Math.floor(Math.random()*data.players.length);
+      selected=data.players[index];
+
+      data.players.splice(index,1);
+      data.lastSpin={
+        id:Math.random().toString(36).slice(2),
+        name:selected.name,
+        time:Date.now()
+      };
+      return data;
+    });
+
+    if(selected){
+      // La animación se ejecuta también en los demás
+      // clientes mediante el listener de la sala.
+      const data=(await roomRef.once("value")).val();
+      const winner=data?.lastSpin;
+      if(winner) {
+        animateWinner(oldPlayers,{id:selected.id,name:selected.name});
+        lastSpin=winner.id;
+      }
+    }
+  }catch(error){
+    busy=false;
+    document.getElementById("spin").disabled=false;
+    alert("No se pudo realizar el sorteo: "+error.message);
+  }
+};
+
+// 5. Compartir la sala.
+document.getElementById("share").onclick=async()=>{
+  try{
+    await navigator.clipboard.writeText(location.href);
+    alert("¡Enlace copiado! Compártelo con todos.");
+  }catch(e){
+    prompt("Copia este enlace:",location.href);
+  }
+};
+
+draw();
+</script>
+</body>
+  </html>
+  
